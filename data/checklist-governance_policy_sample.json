@@ -1,0 +1,162 @@
+[
+  {
+    "requirement": "Identify and document a lawful basis before processing any personal data.",
+    "control": "Implement a documentation process to record the legal justification (Consent, Contract, Legal Obligation, or Legitimate Interests) for all data processing.",
+    "obligation": "Mandatory",
+    "domain": "Data Privacy",
+    "sourceSection": "2.1 Lawful Basis for Processing",
+    "id": "item-1775568803809-0"
+  },
+  {
+    "requirement": "The Data Protection Officer (DPO) must maintain a Record of Processing Activities (ROPA).",
+    "control": "Create and maintain a ROPA log documenting the lawful basis and purpose for each processing activity in accordance with GDPR Article 30.",
+    "obligation": "Mandatory",
+    "domain": "Data Privacy",
+    "sourceSection": "2.1 Lawful Basis for Processing",
+    "id": "item-1775568803809-1"
+  },
+  {
+    "requirement": "Personal data must be retained only for as long as necessary and retention schedules must be enforced.",
+    "control": "Implement and automate data retention and deletion schedules across all systems.",
+    "obligation": "Mandatory",
+    "domain": "Data Privacy",
+    "sourceSection": "2.2 Data Minimisation and Retention",
+    "id": "item-1775568803809-2"
+  },
+  {
+    "requirement": "Retention of Customer Personal Data for duration of contract plus 7 years.",
+    "control": "Configure data lifecycle management policies to delete customer data 7 years post-contract termination.",
+    "obligation": "Recommended",
+    "domain": "Data Privacy",
+    "sourceSection": "Table 1: Recommended Data Retention Schedules",
+    "id": "item-1775568803809-3"
+  },
+  {
+    "requirement": "Retention of Security Logs & Audit Trails for a minimum of 12 months (rolling).",
+    "control": "Configure log management systems (SIEM) to retain security and audit logs for at least 1 year.",
+    "obligation": "Recommended",
+    "domain": "Security",
+    "sourceSection": "Table 1: Recommended Data Retention Schedules",
+    "id": "item-1775568803809-4"
+  },
+  {
+    "requirement": "Respond to Data Subject Access Requests (DSAR) within 30 calendar days.",
+    "control": "Establish a DSAR response workflow with automated tracking and alerts for the 30-day deadline.",
+    "obligation": "Mandatory",
+    "domain": "Data Privacy",
+    "sourceSection": "2.3 Data Subject Rights",
+    "id": "item-1775568803809-5"
+  },
+  {
+    "requirement": "All user accounts must be provisioned through the Identity and Access Management (IAM) system; shared accounts are prohibited.",
+    "control": "Implement a centralized IAM system and disable all shared or generic credentials.",
+    "obligation": "Mandatory",
+    "domain": "Security",
+    "sourceSection": "3.1 Access Control",
+    "id": "item-1775568803809-6"
+  },
+  {
+    "requirement": "Enforce Multi-factor authentication (MFA) for remote access, privileged accounts, and systems holding sensitive data.",
+    "control": "Deploy MFA across all VPNs, administrative interfaces, and sensitive databases.",
+    "obligation": "Mandatory",
+    "domain": "Security",
+    "sourceSection": "3.1 Access Control",
+    "id": "item-1775568803809-7"
+  },
+  {
+    "requirement": "Access rights must be reviewed quarterly and terminated accounts deactivated within 24 hours.",
+    "control": "Conduct quarterly access certification reviews and integrate HR systems with IAM for automated offboarding.",
+    "obligation": "Mandatory",
+    "domain": "Security",
+    "sourceSection": "3.1 Access Control",
+    "id": "item-1775568803809-8"
+  },
+  {
+    "requirement": "Use TLS 1.2 or higher for all data transmitted over public or untrusted networks.",
+    "control": "Configure web servers and network protocols to disable SSL, TLS 1.0, and TLS 1.1; enforce TLS 1.2+.",
+    "obligation": "Mandatory",
+    "domain": "Security",
+    "sourceSection": "3.2 Encryption Requirements",
+    "id": "item-1775568803809-9"
+  },
+  {
+    "requirement": "All devices storing personal data must use AES-256 full-disk encryption.",
+    "control": "Deploy Endpoint Detection and Response (EDR) or MDM solutions to enforce AES-256 encryption on laptops and mobile devices.",
+    "obligation": "Mandatory",
+    "domain": "Security",
+    "sourceSection": "3.2 Encryption Requirements",
+    "id": "item-1775568803809-10"
+  },
+  {
+    "requirement": "Production databases containing personal data must implement Transparent Data Encryption (TDE).",
+    "control": "Enable TDE on all SQL/NoSQL production database instances containing personal data.",
+    "obligation": "Mandatory",
+    "domain": "Security",
+    "sourceSection": "3.2 Encryption Requirements",
+    "id": "item-1775568803809-11"
+  },
+  {
+    "requirement": "Conduct automated vulnerability scans monthly and apply critical patches within 72 hours.",
+    "control": "Schedule monthly vulnerability scanning and implement an emergency patching process for critical CVEs.",
+    "obligation": "Mandatory",
+    "domain": "Security",
+    "sourceSection": "3.3 Vulnerability Management",
+    "id": "item-1775568803809-12"
+  },
+  {
+    "requirement": "Perform annual penetration testing and remediate critical findings within 30 days.",
+    "control": "Engage a third-party security firm for annual testing and track remediation through a risk register.",
+    "obligation": "Mandatory",
+    "domain": "Security",
+    "sourceSection": "3.3 Vulnerability Management",
+    "id": "item-1775568803809-13"
+  },
+  {
+    "requirement": "Conduct a Data Protection Impact Assessment (DPIA) before commencing high-risk processing.",
+    "control": "Implement a pre-project DPIA workflow for new technologies, large-scale data processing, or profiling.",
+    "obligation": "Mandatory",
+    "domain": "Risk Management",
+    "sourceSection": "4.1 Data Protection Impact Assessments (DPIA)",
+    "id": "item-1775568803809-14"
+  },
+  {
+    "requirement": "A signed Data Processing Agreement (DPA) must be in place before sharing data with third parties.",
+    "control": "Legal and Procurement must ensure GDPR-compliant DPAs are executed for all vendor contracts involving data.",
+    "obligation": "Mandatory",
+    "domain": "Risk Management",
+    "sourceSection": "4.2 Third-Party and Vendor Risk",
+    "id": "item-1775568803809-15"
+  },
+  {
+    "requirement": "Conduct an annual internal compliance audit covering privacy, security, and risk.",
+    "control": "Schedule and execute an annual internal audit plan; produce reports within 30 days of completion.",
+    "obligation": "Mandatory",
+    "domain": "Audit",
+    "sourceSection": "5.1 Internal Audit Programme",
+    "id": "item-1775568803809-16"
+  },
+  {
+    "requirement": "Notify the supervisory authority of personal data breaches within 72 hours.",
+    "control": "Integrate a breach notification timer and workflow into the Incident Response Plan.",
+    "obligation": "Mandatory",
+    "domain": "Audit",
+    "sourceSection": "5.2 Incident Reporting and Response",
+    "id": "item-1775568803809-17"
+  },
+  {
+    "requirement": "All employees must complete mandatory annual data protection and information security training.",
+    "control": "Deploy an LMS-based training module and track completion to meet the 95% minimum target.",
+    "obligation": "Mandatory",
+    "domain": "HR",
+    "sourceSection": "6.4 All Employees",
+    "id": "item-1775568803809-18"
+  },
+  {
+    "requirement": "Track and report compliance KPIs monthly to the DPO and quarterly to the Board.",
+    "control": "Establish a compliance dashboard to monitor DSAR response, patch speed, MFA adoption, and training rates.",
+    "obligation": "Mandatory",
+    "domain": "Audit",
+    "sourceSection": "5.3 Compliance Metrics and Reporting",
+    "id": "item-1775568803809-19"
+  }
+]

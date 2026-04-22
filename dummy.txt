@@ -1,0 +1,1 @@
+﻿This is a fake compliance document. Sector 1.2 requires security keys. ISO 27001 requires password changes.
