@@ -6,6 +6,7 @@ from pydantic import BaseModel
 import os
 import uuid
 from typing import Optional
+import gc
 
 # Setup directories
 os.makedirs("frontend", exist_ok=True)
@@ -49,6 +50,9 @@ from job_status import get_job_status, set_job_status
 from queue_tasks import run_ingestion_pipeline
 from ingestion_pipeline import execute_ingestion_pipeline
 
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "50"))
+UPLOAD_CHUNK_SIZE_BYTES = int(os.getenv("UPLOAD_CHUNK_SIZE_BYTES", str(1024 * 1024)))
+
 class ChatRequest(BaseModel):
     query: str
     domain: Optional[str] = "all"
@@ -63,6 +67,7 @@ def _run_ingestion_fallback(file_path: str, filename: str, job_id: str, user_id:
         user_id=user_id,
         task_id=fallback_task_id,
     )
+    gc.collect()
 
 
 @app.post("/api/upload")
@@ -81,10 +86,25 @@ async def upload_file(
         filename = link
     elif file:
         # Process as a physical file upload
-        file_path = os.path.join(f"output/{user_id}", f"{job_id}_{file.filename}")  
+        file_path = os.path.join(f"output/{user_id}", f"{job_id}_{file.filename}")
         with open(file_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
+            total_bytes = 0
+            while True:
+                chunk = await file.read(UPLOAD_CHUNK_SIZE_BYTES)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > MAX_UPLOAD_MB * 1024 * 1024:
+                    f.close()
+                    try:
+                        os.remove(file_path)
+                    except OSError:
+                        pass
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File exceeds max upload limit of {MAX_UPLOAD_MB} MB",
+                    )
+                f.write(chunk)
         filename = file.filename
     else:
         raise HTTPException(status_code=400, detail="Must provide either a file or a link")
@@ -120,6 +140,16 @@ async def get_status(job_id: str):
 
     # Best-effort fallback: if status record has expired but result backend still has task state
     raise HTTPException(status_code=404, detail="Job not found")
+
+
+@app.get("/api/system/memory")
+async def memory_settings():
+    return {
+        "max_upload_mb": MAX_UPLOAD_MB,
+        "upload_chunk_size_bytes": UPLOAD_CHUNK_SIZE_BYTES,
+        "local_status_ttl_sec": int(os.getenv("LOCAL_JOB_STATUS_TTL_SEC", "3600")),
+        "local_status_max_items": int(os.getenv("LOCAL_JOB_STATUS_MAX_ITEMS", "2000")),
+    }
 
 @app.post("/api/chat")
 async def chat_endpoint(request: ChatRequest):

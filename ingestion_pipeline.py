@@ -1,5 +1,7 @@
 from pathlib import Path
 from typing import Optional
+import gc
+import os
 
 from job_status import set_job_status
 
@@ -11,6 +13,7 @@ def execute_ingestion_pipeline(
     user_id: str = "anonymous",
     task_id: Optional[str] = None,
 ) -> dict:
+    max_chunks = int(os.getenv("MAX_INGESTION_CHUNKS", "5000"))
     try:
         set_job_status(job_id, "processing", 15, "Extracting text...", task_id=task_id)
         from ingestion.router import route_file
@@ -21,6 +24,9 @@ def execute_ingestion_pipeline(
         from chunking.chunker import process_blocks
 
         chunks = process_blocks(blocks)
+        # Hard bound to prevent pathological docs from exhausting memory.
+        if len(chunks) > max_chunks:
+            chunks = chunks[:max_chunks]
         for chunk in chunks:
             chunk["user_id"] = user_id
 
@@ -50,6 +56,7 @@ def execute_ingestion_pipeline(
         set_job_status(job_id, "error", 0, str(exc), task_id=task_id)
         raise
     finally:
+        gc.collect()
         if file_path and not str(file_path).startswith(("http://", "https://")):
             path = Path(file_path)
             if path.exists():

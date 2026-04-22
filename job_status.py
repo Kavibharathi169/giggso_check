@@ -1,12 +1,39 @@
 import json
 import os
 import logging
+import time
+from collections import OrderedDict
+from threading import Lock
 from typing import Any, Dict, Optional
 
 import redis
 
 logger = logging.getLogger(__name__)
-LOCAL_JOB_STATUS: Dict[str, Dict[str, Any]] = {}
+LOCAL_JOB_STATUS: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+_LOCAL_STATUS_LOCK = Lock()
+
+
+def _local_status_ttl_sec() -> int:
+    return int(os.getenv("LOCAL_JOB_STATUS_TTL_SEC", "3600"))
+
+
+def _local_status_max_items() -> int:
+    return int(os.getenv("LOCAL_JOB_STATUS_MAX_ITEMS", "2000"))
+
+
+def _prune_local_status_locked(now_ts: Optional[float] = None) -> None:
+    now = now_ts if now_ts is not None else time.time()
+    ttl = _local_status_ttl_sec()
+    max_items = _local_status_max_items()
+
+    # Drop expired entries first.
+    expired = [job_id for job_id, payload in LOCAL_JOB_STATUS.items() if now - payload.get("_updated_at", now) > ttl]
+    for job_id in expired:
+        LOCAL_JOB_STATUS.pop(job_id, None)
+
+    # Enforce bounded memory with FIFO eviction.
+    while len(LOCAL_JOB_STATUS) > max_items:
+        LOCAL_JOB_STATUS.popitem(last=False)
 
 
 def _redis_client() -> redis.Redis:
@@ -32,7 +59,12 @@ def set_job_status(job_id: str, status: str, progress: int, message: str, task_i
         client.set(_key(job_id), json.dumps(payload), ex=int(os.getenv("JOB_STATUS_TTL_SEC", "86400")))
     except redis.RedisError:
         logger.warning("Redis unavailable, storing job status locally for %s", job_id)
-        LOCAL_JOB_STATUS[job_id] = payload
+        local_payload = dict(payload)
+        local_payload["_updated_at"] = time.time()
+        with _LOCAL_STATUS_LOCK:
+            LOCAL_JOB_STATUS[job_id] = local_payload
+            LOCAL_JOB_STATUS.move_to_end(job_id, last=True)
+            _prune_local_status_locked(local_payload["_updated_at"])
 
 
 def get_job_status(job_id: str) -> Optional[Dict[str, Any]]:
@@ -44,4 +76,13 @@ def get_job_status(job_id: str) -> Optional[Dict[str, Any]]:
         return json.loads(raw)
     except redis.RedisError:
         logger.warning("Redis unavailable, reading local status for %s", job_id)
-        return LOCAL_JOB_STATUS.get(job_id)
+        with _LOCAL_STATUS_LOCK:
+            _prune_local_status_locked()
+            payload = LOCAL_JOB_STATUS.get(job_id)
+            if not payload:
+                return None
+            # Keep frequently queried jobs warm while preserving bounds.
+            LOCAL_JOB_STATUS.move_to_end(job_id, last=True)
+            cleaned = dict(payload)
+            cleaned.pop("_updated_at", None)
+            return cleaned
