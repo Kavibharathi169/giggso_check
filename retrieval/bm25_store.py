@@ -109,3 +109,14 @@ def search_bm25(query: str, top_k: int = 5, user_id: str = "anonymous") -> list[
     for idx in top_indices:
         if doc_scores[idx] > 0:  # Only add if there's actually a keyword match
             doc = user_corpus[idx]
+            metadata = doc.get("metadata", {}) or {}
+            results.append(
+                {
+                    "chunk_id": doc.get("id", ""),
+                    "text": doc.get("text", ""),
+                    "metadata": metadata,
+                    "score": float(doc_scores[idx]),
+                }
+            )
+
+    return results

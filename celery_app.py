@@ -25,4 +25,8 @@ celery_app.conf.update(
     task_time_limit=int(os.getenv("CELERY_TASK_TIME_LIMIT_SEC", "1800")),
     task_soft_time_limit=int(os.getenv("CELERY_TASK_SOFT_TIME_LIMIT_SEC", "1500")),
     broker_connection_retry_on_startup=True,
+    worker_send_task_events=False,
+    task_send_sent_event=False,
+    result_expires=int(os.getenv("CELERY_RESULT_EXPIRES_SEC", "3600")),
+    broker_pool_limit=int(os.getenv("CELERY_BROKER_POOL_LIMIT", "20")),
 )

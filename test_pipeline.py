@@ -1,6 +1,6 @@
 import asyncio
 from vectorstore.chroma_store import upsert_chunks
-from embedding.embedder import embed_chunks
+from embedding.embedder import embed_chunks, build_sentence_embedding_units
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -13,8 +13,9 @@ chunk = {
     "content_domain": "financial_compliance"
 }
 
-vectors = embed_chunks([chunk])
-upsert_chunks([chunk], vectors)
+units = build_sentence_embedding_units([chunk])
+vectors = embed_chunks(units)
+upsert_chunks(units, vectors)
 
 payload = {
     'query': 'Extract all compliance policies, requirements, and checklist items. Strictly format as JSON.',

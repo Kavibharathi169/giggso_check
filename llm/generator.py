@@ -6,7 +6,9 @@ from dotenv import load_dotenv
 from llm.groq_client import call_groq
 from llm.prompt_templates import (
     CHECKLIST_SYSTEM_PROMPT,
-    CHECKLIST_USER_PROMPT
+    CHECKLIST_USER_PROMPT,
+    CHECKLIST_VERIFY_SYSTEM_PROMPT,
+    CHECKLIST_VERIFY_USER_PROMPT,
 )
 
 load_dotenv()
@@ -24,6 +26,17 @@ VALID_DOMAINS = [
     "hr_policy",
     "financial_compliance",
 ]
+
+LOW_CONFIDENCE_LABELS = {"low", "very_low"}
+VALID_SOURCE_TYPES = {"regulatory", "operational_guideline"}
+
+
+def build_violation_statement(item: dict) -> str:
+    return (
+        f"I violated {item.get('article_reference', 'unspecified_reference')} - "
+        f"{item.get('violation_condition', '').strip()} "
+        f"Source: {item.get('source_quote', '').strip()}"
+    ).strip()
 
 
 def _parse_json_response(raw: str) -> list[dict]:
@@ -74,19 +87,114 @@ def _validate_items(items: list[dict]) -> list[dict]:
             "source_section"     : item.get("source_section", "—"),
             "page_number"        : int(item.get("page_number", 0) or 0),
             "source_quote"       : (item.get("source_quote", "") or "").strip(),
+            "article_reference"  : (item.get("article_reference", "") or "").strip(),
+            "violation_condition": (item.get("violation_condition", "") or "").strip(),
+            "source_type"        : (item.get("source_type", "") or "").strip().lower(),
             "confidence"         : (item.get("confidence", "") or "").strip().lower() or "medium",
             "priority"           : item.get("priority", "Medium"),
             "action_type"        : item.get("action_type", "Process"),
             "evidence_required"  : item.get("evidence_required", "Documentation or log review."),
             "source_url"         : "",
             "chunk_id"           : str(item.get("chunk_id", "")),
-            "compliance_framework": "",
+            "compliance_framework": "unspecified_framework",
             "verified"           : None,
             "verification_confidence": None,
-            "verification_evidence": ""
+            "verification_evidence": "",
+            "violation_statement": ""
         })
 
     return valid
+
+
+def _extract_article_reference(text: str) -> str:
+    import re
+    if not text:
+        return ""
+    patterns = [
+        r"\bArticle\s+\d+[A-Za-z0-9()/-]*",
+        r"\bSection\s+\d+(\.\d+)*",
+        r"\bRule\s+\d+[A-Za-z0-9()/-]*",
+        r"\bClause\s+\d+[A-Za-z0-9()/-]*",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            return m.group(0).strip()
+    return ""
+
+
+def _infer_source_type(item: dict) -> str:
+    src = " ".join(
+        [
+            str(item.get("item", "") or ""),
+            str(item.get("source_quote", "") or ""),
+            str(item.get("article_reference", "") or ""),
+            str(item.get("compliance_framework", "") or ""),
+        ]
+    ).lower()
+    regulatory_cues = ("article", "section", "rule", "act", "regulation", "gdpr", "sox", "iso")
+    return "regulatory" if any(c in src for c in regulatory_cues) else "operational_guideline"
+
+
+def _post_validate_items(items: list[dict]) -> list[dict]:
+    cleaned: list[dict] = []
+    for item in items:
+        if not item.get("article_reference"):
+            item["article_reference"] = _extract_article_reference(
+                f"{item.get('source_quote', '')} {item.get('item', '')}"
+            ) or "unspecified_reference"
+        if not item.get("violation_condition"):
+            req = item.get("item", "").rstrip(".")
+            item["violation_condition"] = f"Violation occurs when the requirement is not met: {req}."
+        item["violation_statement"] = build_violation_statement(item)
+        if item.get("source_type") not in VALID_SOURCE_TYPES:
+            item["source_type"] = _infer_source_type(item)
+        cf = (item.get("compliance_framework", "") or "").strip()
+        if not cf or cf.lower() == "unknown":
+            item["compliance_framework"] = "unspecified_framework"
+        cleaned.append(item)
+    return cleaned
+
+
+def _build_result_maps(results: list[dict]) -> tuple[dict[str, dict], dict[str, str]]:
+    chunk_map: dict[str, dict] = {}
+    chunk_text_map: dict[str, str] = {}
+    for r in results:
+        cid = r.get("chunk_id") or r.get("metadata", {}).get("chunk_id", "")
+        if not cid:
+            continue
+        chunk_map[cid] = r.get("metadata", {})
+        chunk_text_map[cid] = (r.get("text", "") or "").strip()
+    return chunk_map, chunk_text_map
+
+
+def _is_item_grounded(item: dict, chunk_text_map: dict[str, str]) -> bool:
+    """
+    Deterministic grounding check to prevent hallucinations:
+    - Item must reference a known chunk_id
+    - source_quote should appear in that chunk (or one of top chunks fallback)
+    """
+    chunk_id = str(item.get("chunk_id", "") or "").strip()
+    source_quote = str(item.get("source_quote", "") or "").strip()
+
+    if not chunk_id or chunk_id not in chunk_text_map:
+        return False
+
+    if len(source_quote) < 20:
+        return False
+
+    own_chunk_text = chunk_text_map.get(chunk_id, "")
+    if source_quote in own_chunk_text:
+        return True
+
+    # Small fallback for minor extraction drift on punctuation/newlines.
+    normalized_quote = " ".join(source_quote.split())
+    if not normalized_quote:
+        return False
+    for text in chunk_text_map.values():
+        if normalized_quote in " ".join(text.split()):
+            return True
+    return False
 
 
 def _enrich_with_metadata(
@@ -94,12 +202,7 @@ def _enrich_with_metadata(
     results: list[dict]
 ) -> list[dict]:
     # Build lookup: chunk_id -> metadata
-    chunk_map = {}
-    for r in results:
-        cid = r.get("chunk_id") or r.get("metadata", {}).get("chunk_id", "")
-        meta = r.get("metadata", {})
-        if cid:
-            chunk_map[cid] = meta
+    chunk_map, _ = _build_result_maps(results)
 
     for item in items:
         cid = item.get("chunk_id", "")
@@ -107,7 +210,7 @@ def _enrich_with_metadata(
 
         if meta:
             item["source_url"]           = meta.get("source_url","")
-            item["compliance_framework"] = meta.get("compliance_framework","")
+            item["compliance_framework"] = meta.get("compliance_framework","") or "unspecified_framework"
             if not item.get("page_number"):
                 try:
                     item["page_number"] = int(meta.get("page_number", 0) or 0)
@@ -122,7 +225,7 @@ def _enrich_with_metadata(
                 if sec and (source_section.lower() in sec.lower() or sec.lower() in source_section.lower()):
                     item["source_url"]           = rmeta.get("source_url","")
                     item["chunk_id"]             = rcid
-                    item["compliance_framework"] = rmeta.get("compliance_framework","")
+                    item["compliance_framework"] = rmeta.get("compliance_framework","") or "unspecified_framework"
                     if not item.get("page_number"):
                         try:
                             item["page_number"] = int(rmeta.get("page_number", 0) or 0)
@@ -133,93 +236,57 @@ def _enrich_with_metadata(
     return items
 
 
-_VERIFY_SYSTEM_PROMPT = """
-You are a strict verifier for compliance requirements.
-
-Rules:
-1) Only mark supported=true if the requirement is directly supported by an exact quote in the provided chunks.
-2) If you cannot find an exact supporting quote, supported=false.
-3) Return ONLY JSON, no markdown, no commentary.
-
-Return JSON object:
-{
-  "supported": true/false,
-  "evidence": "<verbatim quote from chunks or 'none'>",
-  "confidence": 0.0-1.0
-}
-""".strip()
-
-
-def _verify_item(requirement_text: str, chunks_text: str) -> dict:
-    user_prompt = (
-        "Source chunks:\n"
-        f"{chunks_text}\n\n"
-        "Requirement:\n"
-        f"{requirement_text}\n\n"
-        "Answer with the JSON object only."
-    )
-    raw = call_groq(
-        system_prompt=_VERIFY_SYSTEM_PROMPT,
-        user_prompt=user_prompt,
-        temperature=0.0,
-        max_tokens=500
-    )
+def _verify_items_with_llm(items: list[dict], context_string: str) -> dict[str, dict]:
+    if not items:
+        return {}
     try:
-        return json.loads(raw)
-    except Exception:
-        # attempt to extract object
-        start = raw.find("{")
-        end = raw.rfind("}") + 1
-        if start != -1 and end > start:
-            try:
-                return json.loads(raw[start:end])
-            except Exception:
-                pass
-    return {"supported": False, "evidence": "none", "confidence": 0.0}
+        verify_prompt = CHECKLIST_VERIFY_USER_PROMPT.format(
+            context=context_string,
+            items_json=json.dumps(items, ensure_ascii=False),
+        )
+        raw = call_groq(
+            system_prompt=CHECKLIST_VERIFY_SYSTEM_PROMPT,
+            user_prompt=verify_prompt,
+            temperature=0.0,
+            max_tokens=3000,
+        )
+        parsed = _parse_json_response(raw)
+    except Exception as e:
+        logger.warning(f"Checklist verification call failed, using deterministic validation only: {e}")
+        return {}
+
+    out: dict[str, dict] = {}
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            continue
+        cid = str(entry.get("chunk_id", "") or "").strip()
+        if not cid:
+            continue
+        out[cid] = {
+            "verified": bool(entry.get("verified", False)),
+            "verification_confidence": float(entry.get("verification_confidence", 0.0) or 0.0),
+            "verification_evidence": str(entry.get("verification_evidence", "") or "").strip(),
+            "violation_statement": str(entry.get("violation_statement", "") or "").strip(),
+        }
+    return out
 
 
-def _verify_and_filter(items: list[dict], results: list[dict]) -> list[dict]:
-    enabled = os.getenv("VERIFY_ENABLE", "true").lower() in ("1", "true", "yes")
-    if not enabled or not items:
-        return items
+def _enforce_grounded_items(items: list[dict], results: list[dict]) -> list[dict]:
+    if not items:
+        return []
 
-    min_conf = float(os.getenv("VERIFY_MIN_CONFIDENCE", "0.80"))
-    # Build a chunk_id -> text map for verification quoting
-    chunk_text = {}
-    for r in results:
-        cid = r.get("chunk_id") or r.get("metadata", {}).get("chunk_id", "")
-        if cid:
-            chunk_text[cid] = r.get("text", "")
-
+    _, chunk_text_map = _build_result_maps(results)
     filtered: list[dict] = []
-    for it in items:
-        cid = it.get("chunk_id", "")
-        # verify against its own chunk + a small neighborhood of top chunks
-        focus = []
-        if cid and cid in chunk_text:
-            focus.append(chunk_text[cid])
-        # add a couple more top chunks for safety
-        for r in results[:3]:
-            t = r.get("text", "")
-            if t and t not in focus:
-                focus.append(t)
-        chunks_blob = "\n\n---\n\n".join(focus)[:12000]
-
-        v = _verify_item(it.get("item", ""), chunks_blob)
-        supported = bool(v.get("supported", False))
-        conf = float(v.get("confidence", 0.0) or 0.0)
-        evidence = str(v.get("evidence", "none") or "none").strip()
-
-        it["verified"] = supported
-        it["verification_confidence"] = conf
-        it["verification_evidence"] = evidence if evidence.lower() != "none" else ""
-
-        if supported and conf >= min_conf and evidence and evidence.lower() != "none":
-            # If model didn't provide a quote during generation, use verifier evidence
-            if not it.get("source_quote"):
-                it["source_quote"] = evidence
-            filtered.append(it)
-
+    for item in items:
+        confidence = str(item.get("confidence", "") or "").strip().lower()
+        if confidence in LOW_CONFIDENCE_LABELS:
+            continue
+        if _is_item_grounded(item, chunk_text_map):
+            item["verified"] = True
+            item["verification_confidence"] = 1.0
+            item["verification_evidence"] = item.get("source_quote", "")
+            item["violation_statement"] = build_violation_statement(item)
+            filtered.append(item)
     return filtered
 
 
@@ -285,7 +352,21 @@ def generate_checklist(
 
     items = _validate_items(items)
     items = _enrich_with_metadata(items, results)
-    items = _verify_and_filter(items, results)
+    items = _post_validate_items(items)
+    verification_map = _verify_items_with_llm(items, context_string)
+    if verification_map:
+        for item in items:
+            cid = str(item.get("chunk_id", "") or "").strip()
+            if not cid:
+                continue
+            v = verification_map.get(cid)
+            if not v:
+                continue
+            item["verified"] = v["verified"]
+            item["verification_confidence"] = v["verification_confidence"]
+            item["verification_evidence"] = v["verification_evidence"]
+            item["violation_statement"] = build_violation_statement(item)
+    items = _enforce_grounded_items(items, results)
     
     return items
 
@@ -339,7 +420,7 @@ def stream_answer(
         context = context
     )
     
-    model = os.getenv("GROQ_GENERATOR_MODEL", "llama-3.3-70b-versatile")
+    model = os.getenv("GROQ_GENERATOR_MODEL", "deepseek-r1-distill-llama-70b")
 
     try:
         client = get_groq_client()

@@ -151,7 +151,16 @@ def assign_compliance_framework(
             )
             return "Companies_Act"
 
-    return "unknown"
+    return "unspecified_framework"
+
+
+def assign_source_type(text: str) -> str:
+    combined = (text or "").lower()
+    regulatory_cues = (
+        "article ", "section ", "rule ", "act", "regulation", "statutory",
+        "shall", "must", "gdpr", "sox", "compliance with",
+    )
+    return "regulatory" if any(cue in combined for cue in regulatory_cues) else "operational_guideline"
 
 
 from classification.llm_classifier import classify_with_llm
@@ -195,6 +204,7 @@ def classify_chunk(chunk: dict) -> dict:
     chunk["compliance_framework"] = assign_compliance_framework(
         text, source_url
     )
+    chunk["source_type"] = assign_source_type(text)
 
     return chunk
 

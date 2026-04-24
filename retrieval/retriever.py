@@ -12,9 +12,8 @@ logger = logging.getLogger(__name__)
 # Higher Alpha = better for conceptual questions ("What are the duties?")
 # Lower Alpha = better for exact matches ("Section 3.2.1", "ISO 27001")
 ALPHA = float(os.getenv("SEARCH_WEIGHT_ALPHA", "0.7"))
+RETRIEVAL_DEBUG_LOG = os.getenv("RETRIEVAL_DEBUG_LOG", "false").lower() in ("1", "true", "yes")
 
-# Cross-encoder re-ranking disabled — requires a separate model download
-# and blocks first query. Hybrid BM25+vector scoring is sufficient.
 _reranker = None
 
 def _get_reranker():
@@ -22,7 +21,7 @@ def _get_reranker():
     if _reranker is not None:
         return _reranker
 
-    enabled = os.getenv("RERANK_ENABLE", "false").lower() in ("1", "true", "yes")
+    enabled = os.getenv("RERANK_ENABLE", "true").lower() in ("1", "true", "yes")
     if not enabled:
         _reranker = False
         return None
@@ -59,6 +58,27 @@ def normalize_scores(results: list[dict], score_key: str = "score", reverse: boo
             r['normalized_score'] = 1.0 - r['normalized_score']
             
     return results
+
+
+def summarize_sentence_hits(results: list[dict]) -> list[dict]:
+    out: list[dict] = []
+    for rank, r in enumerate(results or [], 1):
+        meta = r.get("metadata", {}) or {}
+        out.append(
+            {
+                "rank": rank,
+                "chunk_id": r.get("chunk_id", ""),
+                "parent_chunk_id": meta.get("parent_chunk_id", ""),
+                "sentence_index": meta.get("sentence_index", -1),
+                "score": float(r.get("score", r.get("hybrid_score", 0.0)) or 0.0),
+                "hybrid_score": float(r.get("hybrid_score", 0.0) or 0.0),
+                "source_type": meta.get("source_type", ""),
+                "section_heading": meta.get("section_heading") or meta.get("section_title", ""),
+                "source_url": meta.get("source_url", ""),
+                "text_preview": str(r.get("text", "") or "")[:220],
+            }
+        )
+    return out
 
 def retrieve(
     query         : str,
@@ -181,6 +201,18 @@ def retrieve(
         r.pop("normalized_score", None)
         r.pop("distance", None)
 
+    if RETRIEVAL_DEBUG_LOG:
+        for hit in summarize_sentence_hits(results):
+            logger.info(
+                "retrieval_hit rank=%s chunk_id=%s parent_chunk_id=%s sentence_index=%s score=%.4f source_type=%s",
+                hit["rank"],
+                hit["chunk_id"],
+                hit["parent_chunk_id"],
+                hit["sentence_index"],
+                hit["score"],
+                hit["source_type"],
+            )
+
     logger.info(f"Retrieved {len(results)} results using ALPHA={ALPHA}")  
     return results
 
@@ -198,6 +230,8 @@ def build_context_string(results: list[dict]) -> str:
         section = meta.get("section_heading") or meta.get("section_title", "â€”")
         source  = meta.get("source_url", "â€”")
         domain  = meta.get("content_domain", "â€”")
+        framework = meta.get("compliance_framework", "unspecified_framework")
+        src_type = meta.get("source_type", "operational_guideline")
         page    = meta.get("page_number", 0)
         is_table = meta.get("is_table", 0)
         ents    = meta.get("named_entities", "")
@@ -210,6 +244,8 @@ def build_context_string(results: list[dict]) -> str:
             f"Page    : {page}\n"
             f"Source  : {source}\n"
             f"Domain  : {domain}\n"
+            f"Framework: {framework}\n"
+            f"SourceType: {src_type}\n"
             f"Table   : {is_table}\n"
             f"Entities: {ents}\n"
             f"Score   : {score:.4f}\n"

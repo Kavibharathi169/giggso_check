@@ -13,10 +13,21 @@ logger = logging.getLogger(__name__)
 _model = None
 
 
+def _split_into_sentences(text: str) -> list[str]:
+    import re
+    if not text or not text.strip():
+        return []
+    compact = re.sub(r"\s+", " ", text).strip()
+    # Keep this simple and robust across policy prose.
+    parts = re.split(r"(?<=[.!?])\s+|(?<=:)\s+", compact)
+    out = [p.strip() for p in parts if p and p.strip()]
+    return out if out else [compact]
+
+
 def get_model():
     """
     Load embedding model once and reuse.
-    Uses intfloat/multilingual-e5-base by default.
+    Uses intfloat/multilingual-e5-large-instruct by default.
     Runs fully locally — no API needed.
     """
     global _model
@@ -24,7 +35,7 @@ def get_model():
         from sentence_transformers import SentenceTransformer
         model_name = os.getenv(
             "EMBEDDING_MODEL",
-            "intfloat/multilingual-e5-base"
+            "intfloat/multilingual-e5-large-instruct"
         )
         logger.info(f"Loading embedding model: {model_name}")
         try:
@@ -84,6 +95,29 @@ def embed_chunks(chunks: list[dict]) -> list[list[float]]:
         raise
 
 
+def build_sentence_embedding_units(chunks: list[dict]) -> list[dict]:
+    """
+    Expand chunk documents into sentence-level embedding units.
+    """
+    units: list[dict] = []
+    for chunk in chunks or []:
+        text = str(chunk.get("text", "") or "").strip()
+        if not text:
+            continue
+        chunk_id = str(chunk.get("chunk_id", "") or "")
+        sentences = _split_into_sentences(text)
+        if not sentences:
+            sentences = [text]
+        for idx, sentence in enumerate(sentences):
+            unit = dict(chunk)
+            unit["parent_chunk_id"] = chunk_id
+            unit["sentence_index"] = idx
+            unit["text"] = sentence
+            unit["chunk_id"] = f"{chunk_id}::s{idx}" if chunk_id else f"sentence::{idx}"
+            units.append(unit)
+    return units
+
+
 def embed_query(query: str) -> list[float]:
     """
     Embed a single user query into a vector.
@@ -96,7 +130,6 @@ def embed_query(query: str) -> list[float]:
 
     model = get_model()
 
-    # multilingual-e5 requires "query: " prefix for queries
     prefixed = "query: " + query.strip()
 
     try:

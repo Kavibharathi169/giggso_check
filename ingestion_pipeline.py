@@ -36,22 +36,23 @@ def execute_ingestion_pipeline(
         classified = classify_chunks(chunks)
 
         set_job_status(job_id, "processing", 85, "Embedding and indexing...", task_id=task_id)
-        from embedding.embedder import embed_chunks
+        from embedding.embedder import embed_chunks, build_sentence_embedding_units
         from retrieval.bm25_store import build_bm25_index
         from vectorstore.chroma_store import upsert_chunks
 
-        vectors = embed_chunks(classified)
-        upsert_chunks(classified, vectors)
+        sentence_units = build_sentence_embedding_units(classified)
+        vectors = embed_chunks(sentence_units)
+        upsert_chunks(sentence_units, vectors)
         build_bm25_index(classified, user_id)
 
         set_job_status(
             job_id,
             "completed",
             100,
-            f"Successfully ingested {len(classified)} chunks from {filename}",
+            f"Successfully ingested {len(classified)} chunks ({len(sentence_units)} sentence vectors) from {filename}",
             task_id=task_id,
         )
-        return {"job_id": job_id, "chunks": len(classified)}
+        return {"job_id": job_id, "chunks": len(classified), "sentence_vectors": len(sentence_units)}
     except Exception as exc:
         set_job_status(job_id, "error", 0, str(exc), task_id=task_id)
         raise

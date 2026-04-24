@@ -20,6 +20,16 @@ if OVERLAP >= MAX_TOKENS:
 SEPARATORS = ["\n\n", "\n", ".", "!", "?", " ", ""]
 
 
+def _normalize_extracted_text(text: str) -> str:
+    if not text:
+        return ""
+    # Remove soft hyphen artifacts from PDF/OCR extraction.
+    text = text.replace("\u00ad", "")
+    # Normalize non-breaking spaces that can break quote matching.
+    text = text.replace("\u00a0", " ")
+    return text
+
+
 def _get_splitter() -> RecursiveCharacterTextSplitter:
     return RecursiveCharacterTextSplitter(
         chunk_size       = MAX_TOKENS,
@@ -44,6 +54,7 @@ def _split_into_units(text: str) -> list[str]:
     Split into semantic-ish units without losing wording.
     We prefer paragraphs; if a paragraph is huge, keep it as-is and let token limits enforce boundaries.
     """
+    text = _normalize_extracted_text(text)
     if not text or not text.strip():
         return []
     parts = [p.strip() for p in text.split("\n\n") if p and p.strip()]
@@ -140,7 +151,22 @@ def _build_chunk(text: str, base_block: dict, chunk_index: int, source_format: s
     )
     chunk["is_table"]      = _detect_is_table(text)
     chunk["named_entities"] = _extract_entities(text)
+    chunk["source_type"] = (
+        "regulatory"
+        if any(
+            cue in text.lower()
+            for cue in ("article ", "section ", "rule ", "act", "regulation", "statutory", "shall", "must")
+        )
+        else "operational_guideline"
+    )
     return chunk
+
+
+def _section_boundary_key(block: dict) -> tuple[str, str, str]:
+    section = str(block.get("section_heading") or block.get("section_title") or "").strip().lower()
+    article = str(block.get("article") or "").strip().lower()
+    chapter = str(block.get("chapter") or "").strip().lower()
+    return (section, article, chapter)
 
 def _semantic_chunking(blocks: list[dict], source_format: str) -> list[dict]:
     """
@@ -161,7 +187,7 @@ def _semantic_chunking(blocks: list[dict], source_format: str) -> list[dict]:
     # Prepare units in document order while keeping a stable "base block" for metadata.
     units: list[tuple[str, dict, int]] = []  # (unit_text, base_block, token_count)
     for b in blocks:
-        raw = (b.get("text") or "").strip()
+        raw = _normalize_extracted_text((b.get("text") or "")).strip()
         if not raw:
             continue
         for u in _split_into_units(raw):
@@ -319,8 +345,34 @@ def process_blocks(blocks: list[dict]) -> list[dict]:
     else:
         source_format = "txt"
 
-    # Unified semantic chunking strategy for all documents
-    chunks = _semantic_chunking(blocks, source_format)
+    # Normalize extraction artifacts before any grouping/chunking.
+    cleaned_blocks: list[dict] = []
+    for b in blocks:
+        b2 = dict(b)
+        b2["text"] = _normalize_extracted_text(str(b2.get("text", "") or ""))
+        cleaned_blocks.append(b2)
+
+    # Chunk within section/article/chapter boundaries to avoid mixing rules.
+    grouped: list[list[dict]] = []
+    current_group: list[dict] = []
+    current_key = None
+    for block in cleaned_blocks:
+        key = _section_boundary_key(block)
+        if current_group and key != current_key:
+            grouped.append(current_group)
+            current_group = []
+        current_group.append(block)
+        current_key = key
+    if current_group:
+        grouped.append(current_group)
+
+    chunks: list[dict] = []
+    for group in grouped:
+        chunks.extend(_semantic_chunking(group, source_format))
+
+    # Re-index across groups for stable ordering.
+    for idx, c in enumerate(chunks):
+        c["chunk_index"] = idx
 
     _save_chunks(chunks)
     return chunks

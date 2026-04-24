@@ -9,6 +9,7 @@ _root_env = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(dotenv_path=_root_env, override=True)
 
 logger = logging.getLogger(__name__)
+_GROQ_CLIENT: Groq | None = None
 
 
 def get_groq_client() -> Groq:
@@ -16,13 +17,22 @@ def get_groq_client() -> Groq:
     Return a configured Groq API client.
     Reads GROQ_API_KEY from .env file.
     """
+    global _GROQ_CLIENT
+    if _GROQ_CLIENT is not None:
+        return _GROQ_CLIENT
+
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         raise ValueError(
             "GROQ_API_KEY not found in environment. "
             "Please add it to your .env file."
         )
-    return Groq(api_key=api_key)
+    _GROQ_CLIENT = Groq(
+        api_key=api_key,
+        timeout=float(os.getenv("GROQ_TIMEOUT_SEC", "45")),
+        max_retries=int(os.getenv("GROQ_MAX_RETRIES", "2")),
+    )
+    return _GROQ_CLIENT
 
 
 def call_groq(
@@ -39,7 +49,7 @@ def call_groq(
     if model is None:
         model = os.getenv(
             "GROQ_GENERATOR_MODEL",
-            "llama-3.3-70b-versatile"
+            "deepseek-r1-distill-llama-70b"
         )
 
     logger.info(

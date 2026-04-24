@@ -58,7 +58,7 @@ def classify_with_llm(
 
     model = os.getenv(
         "GROQ_CLASSIFIER_MODEL",
-        "llama-3.3-70b-versatile"
+        "deepseek-r1-distill-llama-70b"
     )
 
     # Build prompt

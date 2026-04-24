@@ -11,6 +11,8 @@ import redis
 logger = logging.getLogger(__name__)
 LOCAL_JOB_STATUS: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 _LOCAL_STATUS_LOCK = Lock()
+_REDIS_CLIENT: Optional[redis.Redis] = None
+_REDIS_LOCK = Lock()
 
 
 def _local_status_ttl_sec() -> int:
@@ -37,8 +39,22 @@ def _prune_local_status_locked(now_ts: Optional[float] = None) -> None:
 
 
 def _redis_client() -> redis.Redis:
-    redis_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
-    return redis.Redis.from_url(redis_url, decode_responses=True)
+    global _REDIS_CLIENT
+    if _REDIS_CLIENT is not None:
+        return _REDIS_CLIENT
+
+    with _REDIS_LOCK:
+        if _REDIS_CLIENT is not None:
+            return _REDIS_CLIENT
+        redis_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+        _REDIS_CLIENT = redis.Redis.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_timeout=float(os.getenv("REDIS_SOCKET_TIMEOUT_SEC", "1.0")),
+            socket_connect_timeout=float(os.getenv("REDIS_CONNECT_TIMEOUT_SEC", "1.0")),
+            health_check_interval=int(os.getenv("REDIS_HEALTH_CHECK_INTERVAL_SEC", "30")),
+        )
+        return _REDIS_CLIENT
 
 
 def _key(job_id: str) -> str:

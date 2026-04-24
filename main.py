@@ -52,11 +52,20 @@ from ingestion_pipeline import execute_ingestion_pipeline
 
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "50"))
 UPLOAD_CHUNK_SIZE_BYTES = int(os.getenv("UPLOAD_CHUNK_SIZE_BYTES", str(1024 * 1024)))
+CHECKLIST_TOP_K = int(os.getenv("CHECKLIST_TOP_K", "12"))
+CHAT_TOP_K = int(os.getenv("CHAT_TOP_K", "5"))
 
 class ChatRequest(BaseModel):
     query: str
     domain: Optional[str] = "all"
     user_id: Optional[str] = "anonymous"
+
+
+class RetrievalDebugRequest(BaseModel):
+    query: str
+    domain: Optional[str] = "all"
+    user_id: Optional[str] = "anonymous"
+    top_k: Optional[int] = 8
 
 def _run_ingestion_fallback(file_path: str, filename: str, job_id: str, user_id: str) -> None:
     fallback_task_id = f"local-{job_id}"
@@ -157,11 +166,14 @@ async def chat_endpoint(request: ChatRequest):
     from llm.generator import generate_answer, generate_checklist
 
     query_lower = request.query.lower()
-    is_checklist = "checklist" in query_lower or "map " in query_lower
+    is_checklist = (
+        "checklist" in query_lower
+        or "extract all compliance policies" in query_lower
+        or "strictly format as json" in query_lower
+    )
     
-    # EFFICIENCY FIX: Non-blocking threadpool offloaded execution
-    # Fetch top 50 chunks for full checklist generation instead of 5
-    fetch_amount = 50 if is_checklist else 5
+    # Keep retrieval bounded to avoid checklist latency spikes.
+    fetch_amount = CHECKLIST_TOP_K if is_checklist else CHAT_TOP_K
     results, context_string = await run_in_threadpool(
         retrieve_and_format, request.query, request.domain, top_k=fetch_amount, user_id=request.user_id
     )
@@ -215,6 +227,27 @@ async def chat_endpoint_stream(request: ChatRequest):
             yield chunk
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.post("/api/debug/retrieval")
+async def debug_retrieval(request: RetrievalDebugRequest):
+    from retrieval.retriever import retrieve, summarize_sentence_hits
+
+    top_k = max(1, min(int(request.top_k or 8), 30))
+    results = await run_in_threadpool(
+        retrieve,
+        request.query,
+        request.domain,
+        None,
+        None,
+        top_k,
+        request.user_id,
+    )
+    return {
+        "query": request.query,
+        "count": len(results),
+        "hits": summarize_sentence_hits(results),
+    }
 
 # Mount the custom HTML UI
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

@@ -1,7 +1,6 @@
 import streamlit as st
 import time
 import json
-import random
 import requests
 import os
 import uuid
@@ -587,6 +586,10 @@ def checklist_rows_for_csv(checklist: list) -> tuple[list[dict], list[str]]:
         "chunk_id",
         "source_url",
         "compliance_framework",
+        "source_type",
+        "article_reference",
+        "violation_condition",
+        "violation_statement",
         "done",
         "rt_score",
         "rt_risk",
@@ -612,6 +615,10 @@ def checklist_rows_for_csv(checklist: list) -> tuple[list[dict], list[str]]:
                 "chunk_id": r.get("chunk_id", ""),
                 "source_url": r.get("source_url", ""),
                 "compliance_framework": r.get("compliance_framework", ""),
+                "source_type": r.get("source_type", ""),
+                "article_reference": r.get("article_reference", ""),
+                "violation_condition": r.get("violation_condition", ""),
+                "violation_statement": r.get("violation_statement", ""),
                 "done": r.get("done", ""),
                 "rt_score": r.get("rt_score", ""),
                 "rt_risk": r.get("rt_risk", ""),
@@ -713,20 +720,6 @@ with st.sidebar:
                             raw_data = payload.get("raw_data")
                             st.session_state.checklist = raw_data if raw_data is not None else []
 
-                            # Fallback for UI Mockup / API failure
-                            if not st.session_state.checklist:
-                                import time as _time
-                                import json as _json
-                                import os as _os
-
-                                _time.sleep(0.5)
-                                sample_path = _os.path.join("data", "checklist-governance_policy_sample.json")
-                                if _os.path.exists(sample_path):
-                                    with open(sample_path, "r", encoding="utf-8") as jf:
-                                        st.session_state.checklist = _json.load(jf)
-                                else:
-                                    st.session_state.checklist = []
-
                             st.session_state.doc_meta["reqs"] = len(st.session_state.checklist)
                             # Re-format checklist to match the new UI's expected format if needed
                             for i, c in enumerate(st.session_state.checklist):
@@ -745,15 +738,7 @@ with st.sidebar:
                                         c.get("source_section", c.get("source", "N/A")),
                                     )
                         else:
-                            import json as _json
-                            import os as _os
-
-                            sample_path = _os.path.join("data", "checklist-governance_policy_sample.json")
-                            if _os.path.exists(sample_path):
-                                with open(sample_path, "r", encoding="utf-8") as jf:
-                                    st.session_state.checklist = _json.load(jf)
-                            else:
-                                st.session_state.checklist = []
+                            st.session_state.checklist = []
                 else:
                     st.error(f"Error {res.status_code}: {res.text}")
 
@@ -926,6 +911,16 @@ with tab1:
             st.markdown(f'<span style="font-size:12.5px;color:rgba(255,255,255,{opacity});text-decoration:{strike}">{item.get("req", "")}</span>', unsafe_allow_html=True)
         with col_badge:
             st.markdown(f'<span class="badge {badge_cls}">{badge_txt}</span>', unsafe_allow_html=True)
+        with col_rt:
+            rt_score = item.get("rt_score")
+            rt_risk = item.get("rt_risk")
+            if rt_score is not None and rt_risk:
+                st.markdown(
+                    f'<span class="mono" style="font-size:10px;color:rgba(255,255,255,0.6)">{rt_risk}: {rt_score}</span>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown('<span class="mono" style="font-size:10px;color:rgba(255,255,255,0.2)">N/A</span>', unsafe_allow_html=True)
         with col_src:
             st.markdown(f'<span class="mono" style="font-size:10px;color:rgba(255,255,255,0.3)">{item.get("source", "N/A")}</span>', unsafe_allow_html=True)
 

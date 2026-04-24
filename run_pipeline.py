@@ -8,7 +8,7 @@ load_dotenv()
 from ingestion.pdf_loader import load_pdf
 from chunking.chunker import process_blocks
 from classification.rule_classifier import classify_chunk, assign_compliance_framework
-from embedding.embedder import embed_chunks
+from embedding.embedder import embed_chunks, build_sentence_embedding_units
 from vectorstore.chroma_store import upsert_chunks, count_records
 
 PDF_PATH = "output/Tamilnadu_policy_notes.pdf"
@@ -35,11 +35,12 @@ for c in chunks:
 print(f"  Classified: {len(classified)}")
 
 print("Step 4: Embedding...")
-vectors = embed_chunks(classified)
+sentence_units = build_sentence_embedding_units(classified)
+vectors = embed_chunks(sentence_units)
 print(f"  Vectors produced: {len(vectors)}")
 
 print("Step 5: Upserting into ChromaDB...")
-upsert_chunks(classified, vectors)
+upsert_chunks(sentence_units, vectors)
 final_count = count_records()
 print(f"  Records in DB: {final_count}")
 
