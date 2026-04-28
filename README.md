@@ -190,3 +190,36 @@ Adjust ports and commands in `docker-compose.yml` / `Dockerfile` if you override
 ## License / compliance
 
 Use in line with your organization’s policies and the terms of Groq, Hugging Face models, and third-party document sources.
+
+---
+
+## Deploy on Render
+
+This repo includes a Render blueprint at `render.yaml`.
+
+### Recommended deployment mode (current codebase)
+
+Deploy as a **single web service** running FastAPI (`main.py`).
+This is recommended because uploads are written to local disk and then processed in background. On Render, separate web and worker services do not share local filesystem by default.
+
+The app is already resilient: if Celery/Redis is unavailable, `/api/upload` automatically falls back to local background processing in the same service.
+
+### Steps
+
+1. Push this repo (with `render.yaml`) to GitHub.
+2. In Render, choose **New +** -> **Blueprint**.
+3. Select your repo and create the service.
+4. In Render service settings, set:
+   - `GROQ_API_KEY` (required secret)
+   - any optional tuning vars you want from `.env.example`
+5. Deploy.
+
+After deploy:
+- API docs: `https://<your-service>.onrender.com/docs`
+- Static frontend: `https://<your-service>.onrender.com/`
+
+### Notes
+
+- First requests can be slow while embedding/model artifacts are downloaded.
+- `CHROMA_PERSIST_DIR` and `OUTPUT_DIR` are configured to Render persistent disk (`/var/data/...`) in `render.yaml`.
+- If you later want true distributed queue workers, switch uploads/storage to a shared object store (for example, S3) before splitting API and Celery into separate services.

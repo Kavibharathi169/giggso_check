@@ -1,0 +1,41 @@
+services:
+  - type: web
+    name: gov-file-extract
+    runtime: python
+    plan: starter
+    autoDeploy: true
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: CHROMA_PERSIST_DIR
+        value: /var/data/chroma_db
+      - key: OUTPUT_DIR
+        value: /var/data/output
+      - key: MAX_UPLOAD_MB
+        value: "50"
+      - key: UPLOAD_CHUNK_SIZE_BYTES
+        value: "1048576"
+      - key: LOCAL_JOB_STATUS_TTL_SEC
+        value: "3600"
+      - key: LOCAL_JOB_STATUS_MAX_ITEMS
+        value: "2000"
+      - key: MAX_INGESTION_CHUNKS
+        value: "5000"
+      - key: CHECKLIST_TOP_K
+        value: "12"
+      - key: CHAT_TOP_K
+        value: "5"
+      - key: CLASSIFY_USE_LLM
+        value: "false"
+      - key: RERANK_ENABLE
+        value: "false"
+      - key: GROQ_GENERATOR_MODEL
+        value: deepseek-r1-distill-llama-70b
+      - key: GROQ_API_KEY
+        sync: false
+    disk:
+      name: gov-file-extract-data
+      mountPath: /var/data
+      sizeGB: 10

@@ -30,6 +30,79 @@ def _normalize_extracted_text(text: str) -> str:
     return text
 
 
+def _clean_pdf_text(text: str) -> str:
+    """
+    Fix common PDF extraction artifacts while preserving section structure.
+    """
+    if not text:
+        return ""
+    # soft hyphen and zero-width spaces
+    text = text.replace("\u00ad", "").replace("\u200b", "")
+    # Fix broken words across line breaks (letters only).
+    text = re.sub(r"([a-z])\s*\n\s*([a-z])", r"\1\2", text)
+    # Remove trailing footnote markers at line end (e.g. "retention limits 6.")
+    text = re.sub(r"\s+\d+\.\s*$", "", text, flags=re.MULTILINE)
+    return text
+
+
+_PDF_SECTION_SPLIT_RE = re.compile(
+    r"(?=\n(?:\d+[\)\.]\s|Article\s+\d+|[A-Z][a-z]+\s+\d+\.|On\s+[a-z]))"
+)
+
+
+def _extract_heading(text: str) -> str:
+    """Extract first meaningful line as a section heading."""
+    if not text:
+        return "unknown"
+    for ln in text.splitlines():
+        line = ln.strip()
+        if line:
+            return line[:80]
+    return "unknown"
+
+
+def _split_pdf_block_by_section(block: dict) -> list[dict]:
+    """
+    Split a PDF page block by section-like headings to avoid mixing
+    multiple guideline items in one oversized chunk.
+    """
+    raw = str(block.get("text", "") or "")
+    cleaned = _clean_pdf_text(raw).strip()
+    if not cleaned:
+        logger.warning(
+            "_split_pdf_block_by_section: empty cleaned text for page %s",
+            block.get("page_number", "?"),
+        )
+        return []
+
+    sections = re.split(_PDF_SECTION_SPLIT_RE, cleaned)
+    logger.debug(
+        "_split_pdf_block_by_section: page=%s input_len=%d sections=%d",
+        block.get("page_number", "?"),
+        len(cleaned),
+        len(sections),
+    )
+    if len(sections) <= 1:
+        logger.warning(
+            "Section split produced <=1 block on page %s; using fallback single block. First 200 chars: %s",
+            block.get("page_number", "?"),
+            cleaned[:200],
+        )
+    out: list[dict] = []
+    section_idx = 0
+    for section in sections:
+        section_text = (section or "").strip()
+        if not section_text:
+            continue
+        child = dict(block)
+        child["text"] = section_text
+        child["section_heading"] = _extract_heading(section_text)
+        child["chunk_id"] = f"{block.get('chunk_id', '')}::s{section_idx}"
+        out.append(child)
+        section_idx += 1
+    return out
+
+
 def _get_splitter() -> RecursiveCharacterTextSplitter:
     return RecursiveCharacterTextSplitter(
         chunk_size       = MAX_TOKENS,
@@ -351,6 +424,17 @@ def process_blocks(blocks: list[dict]) -> list[dict]:
         b2 = dict(b)
         b2["text"] = _normalize_extracted_text(str(b2.get("text", "") or ""))
         cleaned_blocks.append(b2)
+
+    # For PDF sources, split page text into section-level blocks first.
+    if source_format == "pdf":
+        section_blocks: list[dict] = []
+        for b in cleaned_blocks:
+            split = _split_pdf_block_by_section(b)
+            if split:
+                section_blocks.extend(split)
+            else:
+                section_blocks.append(b)
+        cleaned_blocks = section_blocks
 
     # Chunk within section/article/chapter boundaries to avoid mixing rules.
     grouped: list[list[dict]] = []

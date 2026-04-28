@@ -14,6 +14,7 @@ from llm.prompt_templates import (
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+debug_logger = logging.getLogger("generator.debug")
 
 # â”€â”€ Allowed domains â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€      
 VALID_DOMAINS = [
@@ -29,14 +30,77 @@ VALID_DOMAINS = [
 
 LOW_CONFIDENCE_LABELS = {"low", "very_low"}
 VALID_SOURCE_TYPES = {"regulatory", "operational_guideline"}
+UNSPECIFIED_ARTICLES = {"", "gdpr", "unspecified_framework", "unspecified_reference", "none", "null"}
+ARTICLE_MAP = {
+    "accountability": "Article 5(2)",
+    "storage limitation": "Article 5(1)(e)",
+    "data minimisation": "Article 5(1)(c)",
+    "data minimization": "Article 5(1)(c)",
+    "integrity confidentiality": "Article 5(1)(f)",
+    "accuracy": "Article 5(1)(d)",
+    "breach plan": "Article 33, Article 34",
+    "provider evaluation": "Article 28",
+    "technical measures": "Article 32",
+    "identify laws": "Article 88",
+    "privacy notice": "Article 13, Article 14",
+    "publish privacy policy": "Article 13",
+    "third party processors": "Article 5(1)(c)",
+    "document processing": "Article 30",
+    "right to rectification": "Article 16",
+    "right to erasure": "Article 17",
+    "right to access": "Article 15",
+    "consent": "Article 6(1)(a)",
+    "special categories": "Article 9",
+}
 
 
-def build_violation_statement(item: dict) -> str:
+def build_violation_statement(item: dict) -> str | None:
+    article = (item.get("article_reference", "") or "").strip()
+    if article.lower() in UNSPECIFIED_ARTICLES:
+        debug_logger.warning(
+            "DROPPED item %s - article_reference too vague: '%s'",
+            item.get("id", item.get("chunk_id", "?")),
+            article,
+        )
+        return None
     return (
-        f"I violated {item.get('article_reference', 'unspecified_reference')} - "
+        f"I violated {article} - "
         f"{item.get('violation_condition', '').strip()} "
         f"Source: {item.get('source_quote', '').strip()}"
     ).strip()
+
+
+def _clean_pdf_text(text: str) -> str:
+    import re
+    if not text:
+        return ""
+    text = text.replace("\u00ad", "").replace("\u200b", "")
+    text = re.sub(r"([a-z])\s*\n\s*([a-z])", r"\1\2", text)
+    text = re.sub(r"\s+\d+\.\s*$", "", text, flags=re.MULTILINE)
+    return " ".join(text.split())
+
+
+def _normalize_article(text: str) -> str:
+    return (text or "").strip()
+
+
+def _match_article_from_keywords(item: dict) -> str:
+    haystack = " ".join(
+        [
+            str(item.get("item", "") or ""),
+            str(item.get("source_quote", "") or ""),
+            str(item.get("source_section", "") or ""),
+        ]
+    ).lower()
+    for key, article in ARTICLE_MAP.items():
+        if key in haystack:
+            return article
+    debug_logger.warning(
+        "ARTICLE_MAP no match for item %s - section: '%s'",
+        item.get("id", item.get("chunk_id", "?")),
+        item.get("source_section", ""),
+    )
+    return ""
 
 
 def _parse_json_response(raw: str) -> list[dict]:
@@ -81,13 +145,18 @@ def _validate_items(items: list[dict]) -> list[dict]:
         if domain not in VALID_DOMAINS:
             domain = "audit_compliance"
 
+        source_quote = _clean_pdf_text((item.get("source_quote", "") or "").strip())
+        initial_article = _normalize_article((item.get("article_reference", "") or "").strip())
+        if initial_article.lower() in UNSPECIFIED_ARTICLES:
+            initial_article = _match_article_from_keywords(item) or initial_article
+
         valid.append({
             "item"               : text,
             "domain"             : domain,
             "source_section"     : item.get("source_section", "—"),
             "page_number"        : int(item.get("page_number", 0) or 0),
-            "source_quote"       : (item.get("source_quote", "") or "").strip(),
-            "article_reference"  : (item.get("article_reference", "") or "").strip(),
+            "source_quote"       : source_quote,
+            "article_reference"  : initial_article,
             "violation_condition": (item.get("violation_condition", "") or "").strip(),
             "source_type"        : (item.get("source_type", "") or "").strip().lower(),
             "confidence"         : (item.get("confidence", "") or "").strip().lower() or "medium",
@@ -139,21 +208,87 @@ def _infer_source_type(item: dict) -> str:
 def _post_validate_items(items: list[dict]) -> list[dict]:
     cleaned: list[dict] = []
     for item in items:
-        if not item.get("article_reference"):
-            item["article_reference"] = _extract_article_reference(
+        art = _normalize_article(item.get("article_reference", ""))
+        if art.lower() in UNSPECIFIED_ARTICLES:
+            art = _match_article_from_keywords(item) or _extract_article_reference(
                 f"{item.get('source_quote', '')} {item.get('item', '')}"
-            ) or "unspecified_reference"
+            )
+        item["article_reference"] = art or ""
         if not item.get("violation_condition"):
             req = item.get("item", "").rstrip(".")
             item["violation_condition"] = f"Violation occurs when the requirement is not met: {req}."
-        item["violation_statement"] = build_violation_statement(item)
         if item.get("source_type") not in VALID_SOURCE_TYPES:
             item["source_type"] = _infer_source_type(item)
-        cf = (item.get("compliance_framework", "") or "").strip()
-        if not cf or cf.lower() == "unknown":
-            item["compliance_framework"] = "unspecified_framework"
+        # Explicit reclassification for known advisory/guideline items.
+        advisory_cues = ("phishing awareness", "publish", "third part", "identify laws", "iapp", "opinion")
+        cue_text = " ".join(
+            [
+                str(item.get("item", "") or ""),
+                str(item.get("source_quote", "") or ""),
+                str(item.get("source_section", "") or ""),
+            ]
+        ).lower()
+        if any(c in cue_text for c in advisory_cues):
+            item["source_type"] = "operational_guideline"
+
+        if item.get("article_reference", "").lower() not in UNSPECIFIED_ARTICLES:
+            item["compliance_framework"] = "GDPR"
+            if item.get("source_type") not in VALID_SOURCE_TYPES:
+                item["source_type"] = "regulatory"
+        elif item.get("source_type") == "operational_guideline":
+            item["compliance_framework"] = "operational_guideline"
+        else:
+            # Soft fallback: keep item as guideline instead of dropping later.
+            item["article_reference"] = ""
+            item["source_type"] = "operational_guideline"
+            item["compliance_framework"] = "operational_guideline"
+
+        statement = build_violation_statement(item)
+        if statement:
+            item["violation_statement"] = statement
+        else:
+            item["violation_statement"] = (
+                f"Guideline breach - {item.get('violation_condition', '').strip()} "
+                f"Source: {item.get('source_quote', '').strip()}"
+            ).strip()
         cleaned.append(item)
     return cleaned
+
+
+def _filter_valid_items(checklist: list[dict]) -> list[dict]:
+    excluded_source_types = {"commentary", "opinion", "third_party_belief"}
+    excluded_cues = ("iapp", "opinion", "third-party opinion")
+    out: list[dict] = []
+    for item in checklist:
+        st = str(item.get("source_type", "") or "").strip().lower()
+        text = " ".join(
+            [
+                str(item.get("item", "") or ""),
+                str(item.get("source_quote", "") or ""),
+                str(item.get("source_section", "") or ""),
+            ]
+        ).lower()
+        if st in excluded_source_types:
+            debug_logger.warning(
+                "FILTERED item %s - source_type is '%s'",
+                item.get("id", item.get("chunk_id", "?")),
+                st,
+            )
+            continue
+        if any(c in text for c in excluded_cues):
+            debug_logger.warning(
+                "FILTERED item %s - matched opinion cue",
+                item.get("id", item.get("chunk_id", "?")),
+            )
+            continue
+        out.append(item)
+    debug_logger.info("filter_valid_items: %d in -> %d out", len(checklist), len(out))
+    if not out and checklist:
+        logger.error(
+            "filter_valid_items removed all items; returning unfiltered list as safety net"
+        )
+        return checklist
+    return out
 
 
 def _build_result_maps(results: list[dict]) -> tuple[dict[str, dict], dict[str, str]]:
@@ -280,13 +415,30 @@ def _enforce_grounded_items(items: list[dict], results: list[dict]) -> list[dict
     for item in items:
         confidence = str(item.get("confidence", "") or "").strip().lower()
         if confidence in LOW_CONFIDENCE_LABELS:
+            debug_logger.warning(
+                "DROPPED item %s - low confidence '%s'",
+                item.get("id", item.get("chunk_id", "?")),
+                confidence,
+            )
             continue
         if _is_item_grounded(item, chunk_text_map):
             item["verified"] = True
             item["verification_confidence"] = 1.0
             item["verification_evidence"] = item.get("source_quote", "")
-            item["violation_statement"] = build_violation_statement(item)
+            stmt = build_violation_statement(item)
+            if stmt:
+                item["violation_statement"] = stmt
             filtered.append(item)
+        else:
+            debug_logger.warning(
+                "DROPPED item %s - grounding check failed (chunk_id=%s)",
+                item.get("id", item.get("chunk_id", "?")),
+                item.get("chunk_id", ""),
+            )
+    debug_logger.info("grounding_filter: %d in -> %d out", len(items), len(filtered))
+    if not filtered and items:
+        logger.error("grounding removed all items; returning pre-grounded items as fallback")
+        return items
     return filtered
 
 
@@ -305,6 +457,7 @@ def generate_checklist(
         return []
 
     logger.info("Starting checklist generation via Groq API")
+    debug_logger.info("STAGE 0 - input context chars: %d, retrieved results: %d", len(context_string), len(results))
 
     user_prompt = CHECKLIST_USER_PROMPT.format(
         context=context_string
@@ -349,10 +502,16 @@ def generate_checklist(
 
     if not items:
         return []
+    debug_logger.info("STAGE 1 - LLM parsed items: %d", len(items))
 
     items = _validate_items(items)
+    debug_logger.info("STAGE 2 - validated items: %d", len(items))
     items = _enrich_with_metadata(items, results)
+    debug_logger.info("STAGE 3 - metadata enriched items: %d", len(items))
     items = _post_validate_items(items)
+    debug_logger.info("STAGE 4 - post-validated items: %d", len(items))
+    items = _filter_valid_items(items)
+    debug_logger.info("STAGE 5 - filtered items: %d", len(items))
     verification_map = _verify_items_with_llm(items, context_string)
     if verification_map:
         for item in items:
@@ -365,8 +524,11 @@ def generate_checklist(
             item["verified"] = v["verified"]
             item["verification_confidence"] = v["verification_confidence"]
             item["verification_evidence"] = v["verification_evidence"]
-            item["violation_statement"] = build_violation_statement(item)
+            stmt = build_violation_statement(item)
+            if stmt:
+                item["violation_statement"] = stmt
     items = _enforce_grounded_items(items, results)
+    debug_logger.info("STAGE 6 - final output items: %d", len(items))
     
     return items
 
