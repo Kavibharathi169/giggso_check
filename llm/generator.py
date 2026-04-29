@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 from dotenv import load_dotenv
 
 from llm.groq_client import call_groq
@@ -52,6 +53,8 @@ ARTICLE_MAP = {
     "consent": "Article 6(1)(a)",
     "special categories": "Article 9",
 }
+MIN_ITEM_LENGTH = 30
+MIN_GROUNDING_SCORE = 0.5
 
 
 def build_violation_statement(item: dict) -> str | None:
@@ -71,7 +74,6 @@ def build_violation_statement(item: dict) -> str | None:
 
 
 def _clean_pdf_text(text: str) -> str:
-    import re
     if not text:
         return ""
     text = text.replace("\u00ad", "").replace("\u200b", "")
@@ -140,6 +142,8 @@ def _validate_items(items: list[dict]) -> list[dict]:
         text = item.get("item", "").strip()
         if not text:
             continue
+        if len(text) < MIN_ITEM_LENGTH:
+            continue
 
         domain = item.get("domain", "").strip().lower()
         if domain not in VALID_DOMAINS:
@@ -149,6 +153,16 @@ def _validate_items(items: list[dict]) -> list[dict]:
         initial_article = _normalize_article((item.get("article_reference", "") or "").strip())
         if initial_article.lower() in UNSPECIFIED_ARTICLES:
             initial_article = _match_article_from_keywords(item) or initial_article
+
+        grounding_score = _word_overlap_score(text, source_quote)
+        if grounding_score < MIN_GROUNDING_SCORE:
+            debug_logger.warning(
+                "DROPPED item %s - grounding_score %.3f below %.2f",
+                item.get("id", item.get("chunk_id", "?")),
+                grounding_score,
+                MIN_GROUNDING_SCORE,
+            )
+            continue
 
         valid.append({
             "item"               : text,
@@ -169,7 +183,8 @@ def _validate_items(items: list[dict]) -> list[dict]:
             "verified"           : None,
             "verification_confidence": None,
             "verification_evidence": "",
-            "violation_statement": ""
+            "violation_statement": "",
+            "grounding_score"    : grounding_score,
         })
 
     return valid
@@ -213,6 +228,15 @@ def _post_validate_items(items: list[dict]) -> list[dict]:
             art = _match_article_from_keywords(item) or _extract_article_reference(
                 f"{item.get('source_quote', '')} {item.get('item', '')}"
             )
+        # Only keep an article reference if it is explicitly present in the source quote.
+        source_quote_lower = str(item.get("source_quote", "") or "").lower()
+        if art and art.lower() not in source_quote_lower:
+            debug_logger.warning(
+                "Clearing article_reference not present in source_quote for item %s: '%s'",
+                item.get("id", item.get("chunk_id", "?")),
+                art,
+            )
+            art = _extract_article_reference(item.get("source_quote", "") or "")
         item["article_reference"] = art or ""
         if not item.get("violation_condition"):
             req = item.get("item", "").rstrip(".")
@@ -289,6 +313,57 @@ def _filter_valid_items(checklist: list[dict]) -> list[dict]:
         )
         return checklist
     return out
+
+
+def _tokenize_for_overlap(text: str) -> set[str]:
+    tokens = re.findall(r"[a-z0-9]+", (text or "").lower())
+    return {tok for tok in tokens if len(tok) > 2}
+
+
+def _word_overlap_score(item_text: str, source_quote: str) -> float:
+    item_tokens = _tokenize_for_overlap(item_text)
+    if not item_tokens:
+        return 0.0
+    quote_tokens = _tokenize_for_overlap(source_quote)
+    if not quote_tokens:
+        return 0.0
+    return len(item_tokens & quote_tokens) / len(item_tokens)
+
+
+def _is_near_duplicate(a: dict, b: dict, threshold: float = 0.8) -> bool:
+    tokens_a = _tokenize_for_overlap(str(a.get("item", "") or ""))
+    tokens_b = _tokenize_for_overlap(str(b.get("item", "") or ""))
+    if not tokens_a or not tokens_b:
+        return False
+    jaccard = len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
+    if jaccard < threshold:
+        return False
+    # Same legal obligation concept: prefer strict dedupe when article/domain align.
+    domain_match = str(a.get("domain", "")) == str(b.get("domain", ""))
+    article_match = str(a.get("article_reference", "")) == str(b.get("article_reference", ""))
+    return domain_match or article_match
+
+
+def _deduplicate_items(items: list[dict]) -> list[dict]:
+    deduped: list[dict] = []
+    for item in items:
+        replaced = False
+        for idx, existing in enumerate(deduped):
+            if _is_near_duplicate(existing, item):
+                existing_score = float(existing.get("grounding_score", 0.0) or 0.0)
+                new_score = float(item.get("grounding_score", 0.0) or 0.0)
+                if new_score > existing_score:
+                    deduped[idx] = item
+                replaced = True
+                debug_logger.info(
+                    "DEDUP near-duplicate merged: kept score %.3f over %.3f",
+                    max(existing_score, new_score),
+                    min(existing_score, new_score),
+                )
+                break
+        if not replaced:
+            deduped.append(item)
+    return deduped
 
 
 def _build_result_maps(results: list[dict]) -> tuple[dict[str, dict], dict[str, str]]:
@@ -512,6 +587,8 @@ def generate_checklist(
     debug_logger.info("STAGE 4 - post-validated items: %d", len(items))
     items = _filter_valid_items(items)
     debug_logger.info("STAGE 5 - filtered items: %d", len(items))
+    items = _deduplicate_items(items)
+    debug_logger.info("STAGE 5.5 - deduplicated items: %d", len(items))
     verification_map = _verify_items_with_llm(items, context_string)
     if verification_map:
         for item in items:

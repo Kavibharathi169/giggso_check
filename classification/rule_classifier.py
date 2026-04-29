@@ -22,7 +22,7 @@ KEYWORD_MAP: dict[str, list[str]] = {
         "data protection", "personal information",
         "data subject", "data controller", "data processor",
         "right to erasure", "right to access",
-        "privacy policy", "confidentiality"
+        "privacy policy", "confidentiality", "codes of conduct"
     ],
     "risk_management": [
         "risk", "control", "appetite", "mitigation",
