@@ -8,6 +8,13 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
+# Default persistent storage locations (Render/containers typically mount /var/data)
+ENV OUTPUT_DIR=/var/data/output
+ENV CHROMA_PERSIST_DIR=/var/data/chroma_db
+ENV DB_PATH=/var/data/output/governance_data.db
+ENV HF_HOME=/var/data/hf
+ENV TRANSFORMERS_CACHE=/var/data/hf/transformers
+
 # Create and set the working directory
 WORKDIR /app
 
@@ -21,15 +28,21 @@ COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir chromadb streamlit sentence-transformers
+    && pip install --no-cache-dir -r requirements.txt
 
 # Copy the entire project directory into the container
 COPY . .
 
+# Startup script: creates symlinks so app writes to persistent paths
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 # Expose ports for Streamlit and FastAPI
 EXPOSE 8501 8000
 
-# Provide a default command.
-# By default, we run the Streamlit app. For FastAPI, override in docker-compose.
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# Entry point sets up persistent directories, then runs the passed command.
+ENTRYPOINT ["docker-entrypoint.sh"]
+
+# Default mode for deployments: run FastAPI.
+# Platforms often provide PORT; we fall back to 8000.
+CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]

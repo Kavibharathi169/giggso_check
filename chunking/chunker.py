@@ -51,14 +51,40 @@ _PDF_SECTION_SPLIT_RE = re.compile(
 
 
 def _extract_heading(text: str) -> str:
-    """Extract first meaningful line as a section heading."""
-    if not text:
-        return "unknown"
-    for ln in text.splitlines():
-        line = ln.strip()
-        if line:
-            return line[:80]
-    return "unknown"
+    """
+    Extract a human heading line.
+    Avoid synthetic numeric IDs (e.g., '5.', '3.1', '1.2.3') that often appear
+    as the first line in PDFs after splitting.
+    """
+    if not text or not text.strip():
+        return ""
+
+    # Prefer the structured heading parser (handles '3.1 Access Control', etc.).
+    structured = _extract_section_heading(text)
+    if structured:
+        return structured[:120]
+
+    # Fallback: scan first few lines and require at least one letter.
+    for ln in text.splitlines()[:6]:
+        line = (ln or "").strip()
+        if not line:
+            continue
+
+        # Skip lines that are basically only numbering/punctuation.
+        # Examples: "5.", "3.1", "12)", "(4.2)".
+        if re.fullmatch(r"[\d\s\.\)\(\:\-\–—/]+", line):
+            continue
+
+        # If there are no alphabetic characters, treat as synthetic.
+        if not re.search(r"[A-Za-z]", line):
+            continue
+
+        if len(line) < 6:
+            continue
+
+        return line[:80]
+
+    return ""
 
 
 def _split_pdf_block_by_section(block: dict) -> list[dict]:
@@ -96,7 +122,11 @@ def _split_pdf_block_by_section(block: dict) -> list[dict]:
             continue
         child = dict(block)
         child["text"] = section_text
-        child["section_heading"] = _extract_heading(section_text)
+        # Prefer structured heading extraction to avoid synthetic numeric IDs.
+        child["section_heading"] = (
+            _extract_section_heading(section_text)
+            or _extract_heading(section_text)
+        )
         child["chunk_id"] = f"{block.get('chunk_id', '')}::s{section_idx}"
         out.append(child)
         section_idx += 1
@@ -151,9 +181,10 @@ def _extract_section_heading(text: str) -> str:
         if m:
             prefix = (m.group(1) or "").strip()
             title = (m.group(2) or "").strip()
-            if title:
+            # Require actual title content; numeric-only matches are synthetic.
+            if title and re.search(r"[A-Za-z]", title):
                 return f"{prefix} {title}".strip()
-            return prefix
+            return ""
     return ""
 
 def _detect_is_table(text: str) -> int:

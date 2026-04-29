@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local environments
+venv/
+.venv/
+
+# Large/generated / persistence directories (not needed at build time)
+output/
+chroma_db/
+
+# Node / frontend build artifacts (if any)
+.streamlit/
+frontend/.next/
+frontend/build/
+
+# VCS / OS
+.git/
+.DS_Store/
+Thumbs.db
+
